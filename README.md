@@ -4,7 +4,8 @@ Sitio web tipo catálogo para M Collections. Permite explorar y buscar productos
 
 ## Estructura
 
-- `site/`: archivos estáticos que se publican en GitHub Pages.
+- `index.html`: entrada para GitHub Pages si se publica la raíz de la rama; carga los recursos de `site/assets/`.
+- `site/`: código y archivos estáticos del catálogo.
 - `site/index.html`: página principal.
 - `site/assets/app.js`: interfaz, autenticación y conexión con Firebase.
 - `site/assets/styles.css`: estilos.
@@ -19,7 +20,7 @@ No se necesita compilar ni instalar dependencias locales. El navegador carga Fir
 2. Sube estos cambios a la rama `main` o ejecuta manualmente **Deploy to GitHub Pages** en la pestaña **Actions**.
 3. Espera a que termine el flujo y abre la URL que aparece en **Settings → Pages** o en el despliegue del flujo.
 
-El flujo publica el contenido de `site/`, por lo que la página y sus recursos mantienen rutas válidas tanto en una URL de proyecto como en un dominio propio. No configures la rama `main` como origen de publicación de carpeta: el punto de entrada está en `site/`.
+El flujo publica el contenido de `site/`, por lo que la página y sus recursos mantienen rutas válidas tanto en una URL de proyecto como en un dominio propio. Si GitHub Pages está configurado para publicar la raíz de la rama `main`, `index.html` también sirve el catálogo desde la raíz y carga sus recursos desde `site/assets/`.
 
 ## Configuración de Firebase
 
