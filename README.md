@@ -6,6 +6,8 @@
 
 Sitio web tipo catálogo para M Collections. Permite explorar y buscar productos, filtrarlos por sección y consultar detalles. Los pedidos se inician por WhatsApp. El panel de administración permite gestionar productos y secciones.
 
+Para acelerar la carga inicial, el catálogo consulta 8 productos por tanda. Usa **Cargar más productos** para traer los siguientes; la búsqueda y los filtros se aplican a los productos ya cargados. Las fotos nuevas o reemplazadas se comprimen a un objetivo de 120 KiB; las que ya están guardadas conservan su tamaño.
+
 ## Estructura
 
 - `index.html`: entrada para GitHub Pages si se publica la raíz de la rama; carga los recursos de `site/assets/`.

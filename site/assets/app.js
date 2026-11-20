@@ -2,7 +2,7 @@ import { firebaseConfig } from "./firebase-config.js";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot,
-  serverTimestamp, query, orderBy,
+  getDocs, serverTimestamp, query, orderBy, limit, startAfter, where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut,
@@ -39,11 +39,9 @@ const isNew = (d) => d && (Date.now() - d.getTime() < 1000 * 60 * 60 * 24 * 7);
 
 const esc = (s = "") => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// Firestore limita cada documento a ~1 MiB. Como guardamos la foto dentro
-// del mismo documento del producto (sin usar Storage, para no requerir
-// tarjeta de crédito), comprimimos en pasos hasta quedar muy por debajo
-// de ese límite (tope objetivo: 500 KB en base64).
-const IMAGE_BYTE_TARGET = 500 * 1024;
+// Las fotos se guardan en Firestore para no depender de Storage.
+const IMAGE_BYTE_TARGET = 120 * 1024;
+const PRODUCTS_PER_PAGE = 8;
 
 function drawToDataURL(img, maxDim, quality) {
   let { width, height } = img;
@@ -77,7 +75,7 @@ function loadImage(file) {
 async function compressImage(file) {
   const img = await loadImage(file);
   const steps = [
-    [1000, 0.75], [800, 0.7], [650, 0.6], [500, 0.5], [400, 0.4], [320, 0.35],
+    [640, 0.65], [560, 0.58], [480, 0.52], [420, 0.45], [360, 0.38], [320, 0.32],
   ];
   let result = drawToDataURL(img, steps[0][0], steps[0][1]);
   for (const [maxDim, quality] of steps) {
@@ -93,6 +91,11 @@ async function compressImage(file) {
 const state = {
   sections: [],
   products: [],
+  productsCursor: null,
+  hasMoreProducts: false,
+  loadedAdditionalProducts: false,
+  loadingMoreProducts: false,
+  productsLoadError: "",
   loading: true,
   loadError: "",
   activeSection: "todo",
@@ -117,6 +120,7 @@ const el = {
   featuredGrid: $("#featured-grid"),
   productsStatus: $("#products-status"),
   productsGrid: $("#products-grid"),
+  productsPagination: $("#products-pagination"),
   searchInput: $("#search-input"),
   productModal: $("#product-modal"),
   loginModalRoot: $("#login-modal-root"),
@@ -124,6 +128,7 @@ const el = {
   confirmRoot: $("#confirm-root"),
   sectionsList: $("#sections-list"),
   adminProductsList: $("#admin-products-list"),
+  adminProductsPagination: $("#admin-products-pagination"),
 };
 
 /* ---------------------------------------------------------------- */
@@ -195,13 +200,21 @@ function startListeners() {
       if (!el.adminView.classList.contains("hidden") && state.isAdmin) renderAdminSections();
     }, (e) => { state.loadError = "No se pudieron cargar las secciones."; renderProducts(); });
 
-    const productsQuery = query(collection(db, "products"), orderBy("createdAt", "desc"));
+    const productsQuery = query(
+      collection(db, "products"),
+      orderBy("createdAt", "desc"),
+      limit(PRODUCTS_PER_PAGE)
+    );
     onSnapshot(productsQuery, (snap) => {
       state.loading = false;
-      state.products = snap.docs.map((d) => {
-        const data = d.data();
-        return { id: d.id, ...data, createdAt: data.createdAt ? data.createdAt.toDate() : new Date() };
-      });
+      const firstPage = snap.docs.map(mapProductDocument);
+      const firstPageIds = new Set(firstPage.map((product) => product.id));
+      const loadedAfterFirstPage = state.products.filter((product) => !firstPageIds.has(product.id));
+      state.products = [...firstPage, ...loadedAfterFirstPage];
+      if (!state.loadedAdditionalProducts) {
+        state.productsCursor = snap.docs[snap.docs.length - 1] || null;
+        state.hasMoreProducts = snap.docs.length === PRODUCTS_PER_PAGE;
+      }
       renderProducts();
       if (!el.adminView.classList.contains("hidden") && state.isAdmin) renderAdminProducts();
     }, (e) => {
@@ -214,6 +227,64 @@ function startListeners() {
     state.loadError = "No se pudo conectar con la base de datos.";
     renderProducts();
   }
+}
+
+function mapProductDocument(snapshot) {
+  const data = snapshot.data();
+  return {
+    ...data,
+    id: snapshot.id,
+    createdAtRaw: data.createdAt,
+    createdAt: data.createdAt ? data.createdAt.toDate() : new Date(),
+  };
+}
+
+async function loadMoreProducts() {
+  if (!state.hasMoreProducts || !state.productsCursor || state.loadingMoreProducts) return;
+
+  state.loadingMoreProducts = true;
+  state.productsLoadError = "";
+  renderPaginationControls();
+
+  try {
+    const productsQuery = query(
+      collection(db, "products"),
+      orderBy("createdAt", "desc"),
+      startAfter(state.productsCursor),
+      limit(PRODUCTS_PER_PAGE)
+    );
+    const snap = await getDocs(productsQuery);
+    const loadedIds = new Set(state.products.map((product) => product.id));
+    state.products.push(...snap.docs.map(mapProductDocument).filter((product) => !loadedIds.has(product.id)));
+    if (snap.docs.length > 0) state.productsCursor = snap.docs[snap.docs.length - 1];
+    state.loadedAdditionalProducts = true;
+    state.hasMoreProducts = snap.docs.length === PRODUCTS_PER_PAGE;
+  } catch (error) {
+    console.error("No se pudieron cargar más productos:", error);
+    state.productsLoadError = "No se pudieron cargar más productos. Inténtalo de nuevo.";
+  } finally {
+    state.loadingMoreProducts = false;
+  }
+
+  renderProducts();
+  if (!el.adminView.classList.contains("hidden") && state.isAdmin) renderAdminProducts();
+}
+
+function renderPaginationControls() {
+  const showLoadMore = state.hasMoreProducts || state.loadingMoreProducts || state.productsLoadError;
+  const button = showLoadMore
+    ? `<button class="load-more-products btn-ghost rounded-full px-5 py-2.5 text-sm" ${state.loadingMoreProducts ? "disabled" : ""}>
+        ${state.loadingMoreProducts ? "Cargando..." : "Cargar más productos"}
+      </button>`
+    : "";
+  const error = state.productsLoadError
+    ? `<p class="text-sm" style="color:var(--danger)">${state.productsLoadError}</p>`
+    : "";
+
+  [el.productsPagination, el.adminProductsPagination].forEach((container) => {
+    container.innerHTML = `${error}${button}`;
+    container.querySelector(".load-more-products")?.addEventListener("click", loadMoreProducts);
+  });
 }
 
 /* ---------------------------------------------------------------- */
@@ -284,6 +355,7 @@ function renderProducts() {
     el.productsStatus.classList.remove("hidden");
     el.productsGrid.classList.add("hidden");
     el.featuredShelf.classList.add("hidden");
+    renderPaginationControls();
     return;
   }
   if (state.loadError) {
@@ -291,6 +363,7 @@ function renderProducts() {
     el.productsStatus.classList.remove("hidden");
     el.productsGrid.classList.add("hidden");
     el.featuredShelf.classList.add("hidden");
+    renderPaginationControls();
     return;
   }
 
@@ -311,9 +384,14 @@ function renderProducts() {
     el.productsStatus.classList.remove("hidden");
     el.productsGrid.classList.add("hidden");
     const noProductsAtAll = state.products.length === 0;
+    const subtitle = noProductsAtAll
+      ? "Muy pronto encontrarás aquí toda la colección."
+      : state.hasMoreProducts
+        ? "Prueba otra búsqueda o sección, o carga más productos para ampliar los resultados."
+        : "Prueba con otra búsqueda o sección.";
     el.productsStatus.innerHTML = emptyStateHTML(
       noProductsAtAll ? "Aún no hay productos publicados" : "No encontramos productos",
-      noProductsAtAll ? "Muy pronto encontrarás aquí toda la colección." : "Prueba con otra búsqueda o sección.",
+      subtitle,
       ICON_BAG
     );
   } else {
@@ -325,6 +403,7 @@ function renderProducts() {
   document.querySelectorAll("[data-product-id]").forEach((btn) => {
     btn.addEventListener("click", () => openProductModal(btn.dataset.productId));
   });
+  renderPaginationControls();
 }
 
 el.searchInput.addEventListener("input", (e) => { state.query = e.target.value; renderProducts(); });
@@ -412,8 +491,21 @@ function renderAdminSections() {
       </button>
     </div>`).join("");
   el.sectionsList.querySelectorAll(".delete-section").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const hasProducts = state.products.some((p) => p.sectionId === btn.dataset.id);
+    btn.addEventListener("click", async () => {
+      let hasProducts;
+      try {
+        const productsQuery = query(
+          collection(db, "products"),
+          where("sectionId", "==", btn.dataset.id),
+          limit(1)
+        );
+        hasProducts = !(await getDocs(productsQuery)).empty;
+      } catch (error) {
+        console.error("No se pudo comprobar si la sección tiene productos:", error);
+        window.alert("No se pudo comprobar si la sección tiene productos. Inténtalo de nuevo.");
+        return;
+      }
+
       showConfirm(
         hasProducts
           ? `"${btn.dataset.name}" tiene productos asociados. Si la eliminas, esos productos quedarán sin sección. ¿Continuar?`
@@ -430,6 +522,7 @@ function renderAdminSections() {
 function renderAdminProducts() {
   if (state.products.length === 0) {
     el.adminProductsList.innerHTML = emptyStateHTML("Sin productos todavía", "Agrega el primer producto con el botón de arriba.", ICON_BAG);
+    renderPaginationControls();
     return;
   }
   el.adminProductsList.innerHTML = state.products.map((p) => `
@@ -462,9 +555,13 @@ function renderAdminProducts() {
     btn.addEventListener("click", () => {
       showConfirm(`¿Eliminar "${btn.dataset.name}"? Esta acción no se puede deshacer.`, async () => {
         await deleteDoc(doc(db, "products", btn.dataset.id));
+        state.products = state.products.filter((product) => product.id !== btn.dataset.id);
+        renderProducts();
+        renderAdminProducts();
       });
     });
   });
+  renderPaginationControls();
 }
 
 $("#btn-new-product").addEventListener("click", () => openProductForm(null));
@@ -560,12 +657,27 @@ function openProductForm(product) {
       const id = product?.id || crypto.randomUUID();
       const imageUrl = imageChanged ? pendingImage : (product?.imageUrl || null);
 
+      const createdAtRaw = product?.createdAtRaw || serverTimestamp();
       await setDoc(doc(db, "products", id), {
         name, price, description, sectionId, featured,
         imageUrl: imageUrl || null,
-        createdAt: product?.createdAtRaw || serverTimestamp(),
+        createdAt: createdAtRaw,
       }, { merge: true });
 
+      if (product) {
+        const updatedProduct = {
+          ...product,
+          name,
+          price,
+          description,
+          sectionId,
+          featured,
+          imageUrl: imageUrl || null,
+        };
+        state.products = state.products.map((item) => item.id === id ? updatedProduct : item);
+        renderProducts();
+        renderAdminProducts();
+      }
       closeForm();
     } catch (e) {
       showFormError(errEl, "No se pudo guardar. Intenta de nuevo.");
