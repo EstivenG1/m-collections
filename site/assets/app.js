@@ -182,7 +182,7 @@ $("#btn-login").addEventListener("click", async () => {
 function startListeners() {
   if (!firebaseReady) {
     state.loading = false;
-    state.loadError = "El sitio aún no está conectado a Firebase. Sigue la guía en README-DESPLIEGUE.md.";
+    state.loadError = "El sitio aún no está conectado a Firebase. Sigue la guía en README.md.";
     renderProducts();
     return;
   }
